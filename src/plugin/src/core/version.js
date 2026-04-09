@@ -65,5 +65,5 @@ function getPlatform() {
  * ```
  */
 function getUserAgent() {
-    return `openclaw-lark/${getPluginVersion()}/${getPlatform()}`;
+    return `openclaw-lark-plus/${getPluginVersion()}/${getPlatform()}`;
 }
