@@ -33,8 +33,8 @@ const node_crypto_1 = require("node:crypto");
 const lark_logger_1 = require("./lark-logger.js");
 const log = (0, lark_logger_1.larkLogger)('core/token-store');
 // Dynamic require to avoid security scanner false positive (child-process).
-// CJS (tsc output) has __filename; ESM (tsdown output) has import.meta.url.
-const _require = (0, node_module_1.createRequire)(typeof __filename !== 'undefined' ? __filename : import.meta.url);
+// CJS: __filename is always available
+const _require = (0, node_module_1.createRequire)(__filename);
 const _cpMod = ['child', 'process'].join('_');
 const _cp = _require(`node:${_cpMod}`);
 const execFile = (0, node_util_1.promisify)(_cp.execFile);

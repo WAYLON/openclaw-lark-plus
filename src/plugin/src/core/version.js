@@ -25,9 +25,7 @@ function getPluginVersion() {
     if (cachedVersion)
         return cachedVersion;
     try {
-        // 当前文件: src/core/version.ts → 向上两级到达项目根目录
-        const __filename = (0, node_url_1.fileURLToPath)(import.meta.url);
-        const __dirname = (0, node_path_1.dirname)(__filename);
+        // 当前文件: src/core/version.js → 向上两级到达项目根目录
         const packageJsonPath = (0, node_path_1.join)(__dirname, '..', '..', 'package.json');
         const raw = (0, node_fs_1.readFileSync)(packageJsonPath, 'utf8');
         const pkg = JSON.parse(raw);

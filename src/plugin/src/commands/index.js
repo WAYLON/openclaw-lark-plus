@@ -241,6 +241,17 @@ function registerCommands(api) {
                             }).catch(() => {});
                         };
                     };
+                    const sendImageToRequester = ctx.chatId
+                        ? async (pngBuffer) => {
+                            const media = require("../messaging/outbound/media.js");
+                            const { imageKey } = await media.uploadImageLark({
+                                cfg: ctx.config, image: pngBuffer, imageType: 'message', accountId: ctx.accountId,
+                            });
+                            await media.sendImageLark({
+                                cfg: ctx.config, to: ctx.chatId, imageKey, accountId: ctx.accountId,
+                            });
+                        }
+                        : undefined;
                     try {
                         const text = await (0, register_1.runRegisterFlow)({
                             agentId,
@@ -249,6 +260,7 @@ function registerCommands(api) {
                             sendToRequester: ctx.chatId
                                 ? makeSender(ctx.chatId, ctx.accountId)
                                 : undefined,
+                            sendImageToRequester,
                         });
                         return { text };
                     } catch (err) {

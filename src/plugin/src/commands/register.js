@@ -14,6 +14,7 @@ exports.approveRegistration = approveRegistration;
 exports.rejectRegistration = rejectRegistration;
 exports.listPending = listPending;
 
+const QRCode = require("qrcode");
 const app_registration_1 = require("../core/app-registration.js");
 const accounts_manager_1 = require("../core/accounts-manager.js");
 const lark_logger_1 = require("../core/lark-logger.js");
@@ -95,13 +96,25 @@ const T = {
  * @param {string} [params.locale]
  * @param {(msg: string) => void} [params.sendToAdmin] - Send message to admin's chat
  * @param {(msg: string) => void} [params.sendToRequester] - Send follow-up to requester's chat
+ * @param {(pngBuffer: Buffer) => Promise<void>} [params.sendImageToRequester] - Send QR image to requester's chat
  */
 async function runRegisterFlow(params = {}) {
-    const { agentId, workspace, locale = 'zh_cn', sendToAdmin, sendToRequester } = params;
+    const { agentId, workspace, locale = 'zh_cn', sendToAdmin, sendToRequester, sendImageToRequester } = params;
     const t = T[locale] || T.zh_cn;
 
     const session = await (0, app_registration_1.createRegistrationSession)();
     const expireMin = Math.floor(session.expireIn / 60);
+
+    // Generate and send QR code image
+    if (sendImageToRequester) {
+        QRCode.toBuffer(session.qrUrl, { type: 'png', width: 300, margin: 2 }, (err, pngBuffer) => {
+            if (err) {
+                log.warn(`QR code generation failed: ${err}`);
+                return;
+            }
+            sendImageToRequester(pngBuffer).catch(e => log.warn(`QR image send failed: ${e}`));
+        });
+    }
 
     // Background poll
     session.waitForScan().then((result) => {
@@ -281,11 +294,31 @@ function registerRegisterCommand(api) {
                     }
                     : undefined;
 
+                // Send QR code as image to requester's chat
+                const sendImageToRequester = ctx.chatId
+                    ? async (pngBuffer) => {
+                        const media = require("../messaging/outbound/media.js");
+                        const { imageKey } = await media.uploadImageLark({
+                            cfg: ctx.config,
+                            image: pngBuffer,
+                            imageType: 'message',
+                            accountId: ctx.accountId,
+                        });
+                        await media.sendImageLark({
+                            cfg: ctx.config,
+                            to: ctx.chatId,
+                            imageKey,
+                            accountId: ctx.accountId,
+                        });
+                    }
+                    : undefined;
+
                 const text = await runRegisterFlow({
                     agentId,
                     locale: 'zh_cn',
                     sendToAdmin,
                     sendToRequester,
+                    sendImageToRequester,
                 });
 
                 return { text };
