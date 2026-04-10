@@ -1,5 +1,7 @@
 # openclaw-lark-plus
 
+English | [简体中文](./README.zh-CN.md)
+
 Multi-user fork of `@larksuite/openclaw-lark` — each Feishu user scans a QR code to get their **own independent Feishu bot**, with their own agent, conversation history, and workspace directory.
 
 ## Why
