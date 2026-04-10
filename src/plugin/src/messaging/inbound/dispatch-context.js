@@ -18,7 +18,6 @@ const lark_client_1 = require("../../core/lark-client.js");
 const lark_logger_1 = require("../../core/lark-logger.js");
 const chat_info_cache_1 = require("../../core/chat-info-cache.js");
 const comment_target_1 = require("../../core/comment-target.js");
-const user_agent_map_1 = require("../../core/user-agent-map.js");
 const log = (0, lark_logger_1.larkLogger)('inbound/dispatch-context');
 // ---------------------------------------------------------------------------
 // RuntimeEnv fallback
@@ -76,12 +75,6 @@ function buildDispatchContext(params) {
                 id: isGroup ? ctx.chatId : ctx.senderId,
             },
     });
-    // [openclaw-lark-plus] Per-user agent override
-    const userAgentId = (0, user_agent_map_1.resolveUserAgentId)(accountScopedCfg, ctx.senderId);
-    if (userAgentId && route.agentId !== userAgentId) {
-        log.info(`per-user agent override: user=${ctx.senderId} -> agent=${userAgentId}`);
-        route.agentId = userAgentId;
-    }
     // ---- System event ----
     const sender = ctx.senderName ? `${ctx.senderName} (${ctx.senderId})` : ctx.senderId;
     const location = isComment ? `comment ${ctx.chatId}` : isGroup ? `group ${ctx.chatId}` : 'DM';

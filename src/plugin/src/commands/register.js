@@ -17,8 +17,57 @@ exports.listPending = listPending;
 const QRCode = require("qrcode");
 const app_registration_1 = require("../core/app-registration.js");
 const accounts_manager_1 = require("../core/accounts-manager.js");
+const accounts_1 = require("../core/accounts.js");
+const lark_client_1 = require("../core/lark-client.js");
+const app_owner_fallback_1 = require("../core/app-owner-fallback.js");
 const lark_logger_1 = require("../core/lark-logger.js");
 const log = (0, lark_logger_1.larkLogger)('commands/register');
+
+// ---------------------------------------------------------------------------
+// User name resolution helper
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve a Feishu user's display name using an existing bot's credentials.
+ * Returns the name, or '' if resolution fails.
+ *
+ * @param {string} openId - Target user's open_id
+ * @param {object} cfg - OpenClaw config (to find admin's bot account)
+ * @returns {Promise<string>}
+ */
+async function resolveDisplayName(openId, cfg) {
+    try {
+        const admin = (0, accounts_manager_1.getAdmin)();
+        if (!admin) return '';
+        const account = (0, accounts_1.getLarkAccount)(cfg, admin.accountId);
+        if (!account?.configured) return '';
+        const client = lark_client_1.LarkClient.fromAccount(account).sdk;
+        const res = await client.contact.user.get({
+            path: { user_id: openId },
+            params: { user_id_type: 'open_id' },
+        });
+        return res?.data?.user?.name
+            || res?.data?.user?.display_name
+            || res?.data?.user?.nickname
+            || res?.data?.user?.en_name
+            || '';
+    } catch (err) {
+        log.warn(`failed to resolve display name for ${openId}: ${err}`);
+        return '';
+    }
+}
+
+/**
+ * Build a human-readable ID from display name and open_id.
+ * e.g. "张三-a1b2" or "ou_xxxx" as fallback.
+ */
+function buildUserLabel(displayName, openId) {
+    const suffix = openId ? openId.slice(-4) : '';
+    if (displayName) {
+        return `${displayName}-${suffix}`;
+    }
+    return openId || 'unknown';
+}
 
 // ---------------------------------------------------------------------------
 // I18n
@@ -28,10 +77,10 @@ const T = {
     zh_cn: {
         qrReady: (qrUrl, expireMin) =>
             `📱 **新用户注册二维码已生成**\n\n` +
-            `请将以下链接发送给新用户，用飞书扫码即可注册：\n\n` +
+            `请将二维码转发给新用户，用飞书扫码即可注册：\n\n` +
             `🔗 ${qrUrl}\n\n` +
             `⏰ 有效期：${expireMin} 分钟\n\n` +
-            `⏳ 正在后台等待扫码结果...`,
+            `⏳ 正在后台等待扫码结果，扫码完成后需管理员审批...`,
         firstUserSuccess: (accountId, appId, openId) =>
             `✅ **首位用户注册成功（已设为管理员）**\n\n` +
             `  • 账号 ID: \`${accountId}\`\n` +
@@ -45,9 +94,10 @@ const T = {
             `  • App ID: \`${appId}\`\n` +
             `  • 用户 Open ID: \`${openId || '(未知)'}\`\n\n` +
             `已通知管理员审批。`,
-        adminNotify: (pendingId, appId, openId) =>
+        adminNotify: (pendingId, appId, openId, displayName) =>
             `🔔 **新用户注册申请**\n\n` +
             `  • 待审批 ID: \`${pendingId}\`\n` +
+            (displayName ? `  • 用户名: \`${displayName}\`\n` : '') +
             `  • App ID: \`${appId}\`\n` +
             `  • 用户 Open ID: \`${openId || '(未知)'}\`\n\n` +
             `请回复以下命令进行审批：\n` +
@@ -67,7 +117,8 @@ const T = {
             const lines = ['📋 **待审批注册列表**\n'];
             for (const item of items) {
                 const age = Math.floor((Date.now() - item.requestedAt) / 60000);
-                lines.push(`  • \`${item.pendingId}\` | App: \`${item.appId}\` | 用户: \`${item.openId || '-'}\` | ${age} 分钟前`);
+                const who = item.displayName || item.openId || '-';
+                lines.push(`  • \`${item.pendingId}\` | 用户: \`${who}\` | App: \`${item.appId}\` | ${age} 分钟前`);
             }
             lines.push(`\n审批命令：\`/feishu approve <id>\` 或 \`/feishu reject <id>\``);
             return lines.join('\n');
@@ -92,15 +143,38 @@ const T = {
 /**
  * @param {object} params
  * @param {string} [params.agentId]
- * @param {object} [params.workspace]
+ * @param {object} [params.cfg] - OpenClaw config (for resolving user display names)
+ * @param {string} [params.adminSenderId] - The open_id of the person invoking /feishu register
+ * @param {string} [params.adminAccountId] - The accountId the admin is using
  * @param {string} [params.locale]
  * @param {(msg: string) => void} [params.sendToAdmin] - Send message to admin's chat
  * @param {(msg: string) => void} [params.sendToRequester] - Send follow-up to requester's chat
  * @param {(pngBuffer: Buffer) => Promise<void>} [params.sendImageToRequester] - Send QR image to requester's chat
  */
 async function runRegisterFlow(params = {}) {
-    const { agentId, workspace, locale = 'zh_cn', sendToAdmin, sendToRequester, sendImageToRequester } = params;
+    const { agentId, cfg, adminSenderId, adminAccountId, locale = 'zh_cn', sendToAdmin, sendToRequester, sendImageToRequester } = params;
     const t = T[locale] || T.zh_cn;
+
+    // Auto-set admin if not yet configured.
+    // The person who ran `openclaw feishu install` is the bot owner — detect via API.
+    // Fall back to the command sender's open_id.
+    if (!(0, accounts_manager_1.getAdmin)()) {
+        let ownerOpenId = adminSenderId;
+        if (cfg && adminAccountId) {
+            try {
+                const account = (0, accounts_1.getLarkAccount)(cfg, adminAccountId);
+                if (account?.configured) {
+                    const sdk = lark_client_1.LarkClient.fromAccount(account).sdk;
+                    const detected = await (0, app_owner_fallback_1.getAppOwnerFallback)(account, sdk);
+                    if (detected) ownerOpenId = detected;
+                }
+            } catch (err) {
+                log.warn(`failed to detect bot owner, using sender: ${err}`);
+            }
+        }
+        (0, accounts_manager_1.setAdmin)(ownerOpenId, adminAccountId || 'default');
+        log.info(`auto-set admin: openId=${ownerOpenId}, accountId=${adminAccountId || 'default'}`);
+    }
 
     const session = await (0, app_registration_1.createRegistrationSession)();
     const expireMin = Math.floor(session.expireIn / 60);
@@ -116,61 +190,40 @@ async function runRegisterFlow(params = {}) {
         });
     }
 
-    // Background poll
-    session.waitForScan().then((result) => {
-        const admin = (0, accounts_manager_1.getAdmin)();
+    // Background poll — new user scans QR, gets pending approval
+    session.waitForScan().then(async (result) => {
+        // Resolve user display name via admin's bot
+        const displayName = cfg ? await resolveDisplayName(result.openId, cfg) : '';
+        const userLabel = buildUserLabel(displayName, result.openId);
+        const userAgentId = agentId || userLabel;
+        const pendingId = `reg-${Date.now().toString(36)}`;
 
-        if (!admin) {
-            // --- First user: auto-approve, set as admin ---
-            const accountId = `user-${result.openId || result.appId}`;
-            try {
-                (0, accounts_manager_1.addFeishuAccount)({
-                    accountId,
-                    appId: result.appId,
-                    appSecret: result.appSecret,
-                    domain: result.domain,
-                    openId: result.openId,
-                    agentId,
-                    workspace,
-                });
-                (0, accounts_manager_1.setAdmin)(result.openId, accountId);
+        try {
+            (0, accounts_manager_1.addPendingRegistration)({
+                pendingId,
+                appId: result.appId,
+                appSecret: result.appSecret,
+                openId: result.openId,
+                domain: result.domain,
+                agentId: userAgentId,
+                workspace: { name: userLabel },
+                displayName,
+            });
 
-                const msg = t.firstUserSuccess(accountId, result.appId, result.openId);
-                log.info(`first user registered as admin: ${accountId}`);
-                if (sendToRequester) sendToRequester(msg);
-            } catch (err) {
-                log.error(`first user registration failed: ${err}`);
-                if (sendToRequester) sendToRequester(t.scanFailed(String(err)));
+            log.info(`pending registration: ${pendingId} (${displayName || result.openId}, awaiting admin approval)`);
+
+            // Notify requester (the admin who ran /feishu register)
+            if (sendToRequester) {
+                sendToRequester(t.pendingApproval(pendingId, result.appId, result.openId));
             }
-        } else {
-            // --- Subsequent user: store as pending, notify admin ---
-            const pendingId = `reg-${Date.now().toString(36)}`;
-            try {
-                (0, accounts_manager_1.addPendingRegistration)({
-                    pendingId,
-                    appId: result.appId,
-                    appSecret: result.appSecret,
-                    openId: result.openId,
-                    domain: result.domain,
-                    agentId,
-                    workspace,
-                });
 
-                log.info(`pending registration: ${pendingId} (awaiting admin approval)`);
-
-                // Notify requester
-                if (sendToRequester) {
-                    sendToRequester(t.pendingApproval(pendingId, result.appId, result.openId));
-                }
-
-                // Notify admin
-                if (sendToAdmin) {
-                    sendToAdmin(t.adminNotify(pendingId, result.appId, result.openId));
-                }
-            } catch (err) {
-                log.error(`failed to store pending registration: ${err}`);
-                if (sendToRequester) sendToRequester(t.scanFailed(String(err)));
+            // Notify admin
+            if (sendToAdmin) {
+                sendToAdmin(t.adminNotify(pendingId, result.appId, result.openId, displayName));
             }
+        } catch (err) {
+            log.error(`failed to store pending registration: ${err}`);
+            if (sendToRequester) sendToRequester(t.scanFailed(String(err)));
         }
     }).catch((err) => {
         log.warn(`registration poll failed: ${err}`);
@@ -194,15 +247,16 @@ function approveRegistration(pendingId) {
     const reg = (0, accounts_manager_1.getPendingRegistration)(pendingId);
     if (!reg) return t.notFound(pendingId);
 
-    const accountId = `user-${reg.openId || reg.appId}`;
+    const userLabel = buildUserLabel(reg.displayName || '', reg.openId);
+    const accountId = userLabel;
     (0, accounts_manager_1.addFeishuAccount)({
         accountId,
         appId: reg.appId,
         appSecret: reg.appSecret,
         domain: reg.domain,
         openId: reg.openId,
-        agentId: reg.agentId,
-        workspace: reg.workspace,
+        agentId: reg.agentId || userLabel,
+        workspace: reg.workspace || { name: userLabel },
     });
 
     (0, accounts_manager_1.removePendingRegistration)(pendingId);
@@ -278,13 +332,13 @@ function registerRegisterCommand(api) {
 
                 const sendToAdmin = admin ? makeSender(admin.openId, admin.accountId) : undefined;
                 // Requester gets follow-up in the current chat
-                const sendToRequester = ctx.chatId
+                const sendToRequester = (ctx.to || ctx.senderId)
                     ? (msg) => {
                         try {
                             const send = require("../messaging/outbound/send.js");
                             send.sendMessageFeishu({
                                 cfg: ctx.config,
-                                to: ctx.chatId,
+                                to: (ctx.to || ctx.senderId),
                                 text: msg,
                                 accountId: ctx.accountId,
                             }).catch(err => log.error(`send failed: ${err}`));
@@ -295,7 +349,7 @@ function registerRegisterCommand(api) {
                     : undefined;
 
                 // Send QR code as image to requester's chat
-                const sendImageToRequester = ctx.chatId
+                const sendImageToRequester = (ctx.to || ctx.senderId)
                     ? async (pngBuffer) => {
                         const media = require("../messaging/outbound/media.js");
                         const { imageKey } = await media.uploadImageLark({
@@ -306,7 +360,7 @@ function registerRegisterCommand(api) {
                         });
                         await media.sendImageLark({
                             cfg: ctx.config,
-                            to: ctx.chatId,
+                            to: (ctx.to || ctx.senderId),
                             imageKey,
                             accountId: ctx.accountId,
                         });
@@ -315,6 +369,9 @@ function registerRegisterCommand(api) {
 
                 const text = await runRegisterFlow({
                     agentId,
+                    cfg: ctx.config,
+                    adminSenderId: ctx.senderId,
+                    adminAccountId: ctx.accountId,
                     locale: 'zh_cn',
                     sendToAdmin,
                     sendToRequester,

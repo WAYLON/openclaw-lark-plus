@@ -233,14 +233,78 @@ function addFeishuAccount(params) {
 
     feishu.accounts[accountId] = accountCfg;
 
-    if (agentId && openId) {
-        if (!feishu.userAgentMap) feishu.userAgentMap = {};
-        feishu.userAgentMap[openId] = agentId;
-    }
+    const effectiveAgentId = agentId || accountId;
 
-    if (workspace && openId) {
-        if (!feishu.userWorkspaces) feishu.userWorkspaces = {};
-        feishu.userWorkspaces[openId] = workspace;
+    // Per-user agent + workspace isolation via the framework's native
+    // routing system (config.agents.list + config.bindings).
+    //
+    // This is the documented way to give each user their own agent
+    // identity, workspace directory, system prompt, skills, etc.
+    // The framework's resolveAgentRoute() will pick the per-user agent
+    // automatically when the user's openId matches a binding rule.
+    if (openId) {
+        // 1. Define the agent in config.agents.list
+        if (!config.agents) config.agents = {};
+        if (!Array.isArray(config.agents.list)) config.agents.list = [];
+
+        // Safety net: ensure a `main` agent exists.
+        //
+        // Any channel-wide binding (e.g. legacy `{agentId: "main", match: {channel: "feishu"}}`)
+        // and the framework's default routing both resolve to `agentId: "main"`.
+        // If `main` isn't in `agents.list`, the SDK's `pickFirstExistingAgentId`
+        // falls back to the FIRST agent in the list — which is whichever per-user
+        // agent happens to be at index 0. That causes unrelated users (including
+        // the admin) to get routed into some other user's session.
+        //
+        // Defining `main` explicitly keeps the fallback well-behaved: un-bound
+        // users land on a real default agent instead of hijacking someone else's.
+        if (!config.agents.list.some(a => a?.id === 'main')) {
+            config.agents.list.unshift({
+                id: 'main',
+                name: 'main',
+                default: true,
+            });
+        }
+
+        const existingAgentIdx = config.agents.list.findIndex(a => a?.id === effectiveAgentId);
+        const agentEntry = {
+            id: effectiveAgentId,
+            name: workspace?.name || effectiveAgentId,
+        };
+        // Per-user workspace directory under ~/.openclaw/workspaces/<user>
+        const wsDir = workspace?.dir || path.join(os.homedir(), '.openclaw', 'workspaces', effectiveAgentId);
+        try {
+            fs.mkdirSync(wsDir, { recursive: true });
+        } catch (err) {
+            log.warn(`failed to create workspace dir ${wsDir}: ${err}`);
+        }
+        agentEntry.workspace = wsDir;
+
+        if (existingAgentIdx >= 0) {
+            config.agents.list[existingAgentIdx] = { ...config.agents.list[existingAgentIdx], ...agentEntry };
+        } else {
+            config.agents.list.push(agentEntry);
+        }
+
+        // 2. Bind the user's openId to that agent via config.bindings
+        if (!Array.isArray(config.bindings)) config.bindings = [];
+        const bindingExists = config.bindings.some(b =>
+            b?.type === 'route' &&
+            b?.agentId === effectiveAgentId &&
+            b?.match?.channel === 'feishu' &&
+            b?.match?.peer?.id === openId
+        );
+        if (!bindingExists) {
+            config.bindings.push({
+                type: 'route',
+                agentId: effectiveAgentId,
+                comment: `[openclaw-lark-plus] auto-binding for ${workspace?.name || openId}`,
+                match: {
+                    channel: 'feishu',
+                    peer: { kind: 'direct', id: openId },
+                },
+            });
+        }
     }
 
     if (!config.plugins) config.plugins = {};
@@ -250,7 +314,7 @@ function addFeishuAccount(params) {
     }
 
     writeOpenClawConfig(config);
-    log.info(`account added: ${accountId} (appId=${appId}, openId=${openId || '-'})`);
+    log.info(`account added: ${accountId} (appId=${appId}, agent=${effectiveAgentId})`);
 
     return { accountId, config };
 }

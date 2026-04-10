@@ -232,6 +232,7 @@ function registerCommands(api) {
                     const agentId = args[1] || undefined;
                     const accounts_manager = require("../core/accounts-manager.js");
                     const admin = accounts_manager.getAdmin();
+                    const replyTo = ctx.to || ctx.senderId;
                     const makeSender = (toOpenId, toAccountId) => {
                         if (!toOpenId || !toAccountId) return undefined;
                         return (msg) => {
@@ -241,24 +242,27 @@ function registerCommands(api) {
                             }).catch(() => {});
                         };
                     };
-                    const sendImageToRequester = ctx.chatId
+                    const sendImageToRequester = replyTo
                         ? async (pngBuffer) => {
                             const media = require("../messaging/outbound/media.js");
                             const { imageKey } = await media.uploadImageLark({
                                 cfg: ctx.config, image: pngBuffer, imageType: 'message', accountId: ctx.accountId,
                             });
                             await media.sendImageLark({
-                                cfg: ctx.config, to: ctx.chatId, imageKey, accountId: ctx.accountId,
+                                cfg: ctx.config, to: replyTo, imageKey, accountId: ctx.accountId,
                             });
                         }
                         : undefined;
                     try {
                         const text = await (0, register_1.runRegisterFlow)({
                             agentId,
+                            cfg: ctx.config,
+                            adminSenderId: ctx.senderId,
+                            adminAccountId: ctx.accountId,
                             locale: 'zh_cn',
                             sendToAdmin: admin ? makeSender(admin.openId, admin.accountId) : undefined,
-                            sendToRequester: ctx.chatId
-                                ? makeSender(ctx.chatId, ctx.accountId)
+                            sendToRequester: replyTo
+                                ? makeSender(replyTo, ctx.accountId)
                                 : undefined,
                             sendImageToRequester,
                         });

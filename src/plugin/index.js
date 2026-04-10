@@ -22,6 +22,7 @@ const diagnose_1 = require("./src/commands/diagnose.js");
 const index_3 = require("./src/commands/index.js");
 const users_1 = require("./src/commands/users.js");
 const register_1 = require("./src/commands/register.js");
+const cli_install_1 = require("./src/commands/cli-install.js");
 const lark_logger_1 = require("./src/core/lark-logger.js");
 const security_check_1 = require("./src/core/security-check.js");
 const tool_use_trace_store_1 = require("./src/card/tool-use-trace-store.js");
@@ -185,6 +186,8 @@ const plugin = {
         (0, users_1.registerUserCommands)(api);
         // [openclaw-lark-plus] Registration command: /feishu_register (QR-code new bot creation)
         (0, register_1.registerRegisterCommand)(api);
+        // [openclaw-lark-plus] CLI install: openclaw lark-plus-install
+        (0, cli_install_1.registerCliInstall)(api);
         // ---- Multi-account security checks ----
         if (api.config) {
             (0, security_check_1.emitSecurityWarnings)(api.config, api.logger);
