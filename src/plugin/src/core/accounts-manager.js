@@ -292,6 +292,7 @@ function addFeishuAccount(params) {
             b?.type === 'route' &&
             b?.agentId === effectiveAgentId &&
             b?.match?.channel === 'feishu' &&
+            b?.match?.accountId === accountId &&
             b?.match?.peer?.id === openId
         );
         if (!bindingExists) {
@@ -301,6 +302,7 @@ function addFeishuAccount(params) {
                 comment: `[openclaw-lark-plus] auto-binding for ${workspace?.name || openId}`,
                 match: {
                     channel: 'feishu',
+                    accountId,
                     peer: { kind: 'direct', id: openId },
                 },
             });

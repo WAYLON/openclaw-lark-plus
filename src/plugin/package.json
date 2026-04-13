@@ -1,0 +1,11 @@
+{
+  "name": "openclaw-lark-plus",
+  "version": "1.0.0",
+  "private": true,
+  "main": "index.js",
+  "openclaw": {
+    "extensions": [
+      "./index.js"
+    ]
+  }
+}
